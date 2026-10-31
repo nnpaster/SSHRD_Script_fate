@@ -23,38 +23,6 @@ banner on the usage screen and on every one of its commands:
   FATE's SSHRD fork  |  complete activation backup  |  activation.sh 1.0.0
 ```
 
-### Banner on the phone
-
-The ramdisk itself is patched too, so the boot console shows the fork right after
-the stock credit line:
-
-```
-SSHRD_Script by Nathan (verygenericname)
-Running server
-
- _____      _      _____   _____
-|  ___|    / \    |_   _| |  ___|
-| |_      / _ \     | |   | |__  
-|  _|    / ___ \    | |   |  __| 
-|_|     /_/   \_\   |_|   |_____|
-    fate's fork of sshrd_script
-```
-
-`restored_external` is a Mach-O binary whose strings are packed with single NUL
-separators (`...verygenericname\0hopefully done...`), so it cannot be edited in
-place. Instead `sshtars/ssh.tar.gz` now carries:
-
-* `usr/local/bin/dropbear.real` - the original daemon, byte-identical
-* `usr/local/bin/dropbear` - a 12-line `/bin/sh` wrapper that prints the banner and
-  then `exec`s `dropbear.real "$@"`
-
-Nothing else in the payload changed. To drop the banner again, replace the wrapper
-with `dropbear.real`, or restore the stock `sshtars/ssh.tar.gz`. Note the payload is
-shared by all ramdisks, so you must rebuild a ramdisk (`./sshrd.sh <version>`) to
-see the change; an already-built `sshramdisk/` keeps the old payload.
-
----
-
 ## Why the stock `--backup-activation` is not enough
 
 Upstream saves three files:
