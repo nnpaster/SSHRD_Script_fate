@@ -34,6 +34,11 @@ cd into SSHRD_Script directory. Run `chmod +x sshrd.sh` if running the script fo
   - On 7.0-10.2.1, there are also a few more options: `./sshrd.sh --dump-disk0s1s1`, `./sshrd.sh --restore-disk0s1s1`, `./sshrd.sh --dump-disk0s1s2`, `./sshrd.sh --restore-disk0s1s2`
 - Install TrollStore on 14.0-16.6.1, 16.7 RC, 17.0: `./sshrd.sh --install-trollstore`
 - Un-disable and get unlimited passcode attempts on iOS 7-8: `./sshrd.sh --brute-force`
+## fate's fork additions
+- `--backup-activation-full` / `--restore-activation-full` / `--activation-info`
+- `--contact-info` / `--owner-phone` / `--owner-email`
+- `--check-payload`; `--dump-blobs` (also accepts `dump-blobs`)
+See [README-activation.md](README-activation.md).
 ## Notes & Known Issues
 - "kex_exchange_identification: read: Connection reset by peer" and "Connection reset by 127.0.0.1 port 2222" indicate an SSH connection issue, if this occurs, try the following solutions: unplug and replug device, change cable, re-enter ramdisk mode, reboot PC
 - On Linux, A7 devices must be manually placed into pwnDFU using [ipwnder_lite](https://github.com/LukeZGD/ipwnder_lite). [Usage](https://github.com/LukeZGD/Legacy-iOS-Kit/wiki/Pwning-Using-Another-iOS-Device)
