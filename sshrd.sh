@@ -2,6 +2,17 @@
 set -e
 cd "$(dirname "$0")"
 
+# The dash-less commands are easy to guess wrong (dump-blobs vs --dump-blobs).
+# Accept both spellings instead of silently falling through to "build a ramdisk".
+case "$1" in
+    '--clean')      set -- clean ;;
+    '--dump-blobs') set -- dump-blobs ;;
+    '--reboot')     set -- reboot ;;
+    '--ssh')        set -- ssh ;;
+    '--reset')      set -- reset ;;
+    '--boot')       set -- boot ;;
+esac
+
 version="$1"
 
 major=$(echo "$version" | cut -d. -f1)
@@ -39,6 +50,15 @@ pause() {
     read
 }
 
+require_activation_lib() {
+    if [ ! -f activation.sh ]; then
+        echo_error "activation.sh is missing next to sshrd.sh"
+        echo_code "It ships with this fork and is required by the --*-activation-full commands"
+        exit
+    fi
+    . ./activation.sh
+}
+
 ERR_HANDLER () {
     [ $? -eq 0 ] && exit
     echo_error "An error occurred"
@@ -51,11 +71,25 @@ ERR_HANDLER () {
 trap ERR_HANDLER EXIT
 
 if [ -z "$1" ] || [ -n "$2" ]; then
+    if [ -f activation.sh ]; then
+        . ./activation.sh
+        fate_banner
+    fi
     echo_text "Basic usage:"
     echo_code "./sshrd.sh <ramdisk version>"
     echo_code "./sshrd.sh boot"
     echo_code "./sshrd.sh ssh"
-    echo_text "See README.md for more information"
+    echo_text "Complete activation backup/restore (keeps data_ark.plist and FairPlay, needed for iServices):"
+    echo_code "./sshrd.sh --backup-activation-full"
+    echo_code "./sshrd.sh --restore-activation-full"
+    echo_code "./sshrd.sh --activation-info"
+    echo_text "Owner contact details already stored on the device (read-only):"
+    echo_code "./sshrd.sh --contact-info"
+    echo_code "./sshrd.sh --owner-phone"
+    echo_code "./sshrd.sh --owner-email"
+    echo_text "Ramdisk payload / boot banner check:"
+    echo_code "./sshrd.sh --check-payload"
+    echo_text "See README.md and README-activation.md for more information"
     exit
 fi
 
@@ -85,17 +119,55 @@ elif [ "$1" = 'dump-blobs' ]; then
         sudo usbmuxd -pf > /dev/null 2>&1 &
         sleep .1
     fi
+    killall iproxy > /dev/null 2>&1 || true
     "$(uname)"/"$(uname -m)"/iproxy 2222 22 > /dev/null 2>&1 &
-    version=$("$(uname)"/"$(uname -m)"/sshpass -p alpine ssh root@127.0.0.1 -p2222 -o StrictHostKeyChecking=no "sw_vers -productVersion")
+    sleep 1
+    version=$("$(uname)"/"$(uname -m)"/sshpass -p alpine ssh root@127.0.0.1 -p2222 -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=5 "sw_vers -productVersion" 2>/dev/null || true)
     version=${version%%.*}
+    case "$version" in
+        ''|*[!0-9]*)
+            echo_error "Could not read the iOS version over SSH - is the device booted into the SSH ramdisk?"
+            echo_code "Run ./sshrd.sh boot first, unplug/replug if it still fails"
+            killall iproxy > /dev/null 2>&1 || true
+            if [ "$(uname)" = 'Linux' ]; then
+                sudo killall usbmuxd > /dev/null 2>&1 || true
+            fi
+            exit
+            ;;
+    esac
     if [ "$version" -ge 16 ]; then
         device=rdisk2
         echo_text "If your device is on 16.0+, it is recommended to use Legacy iOS Kit to dump fully useful blobs, go here for more details: https://github.com/LukeZGD/Legacy-iOS-Kit/wiki/Saving-onboard-SHSH-blobs-of-current-iOS-version"; pause
     else
         device=rdisk1
     fi
-    "$(uname)"/"$(uname -m)"/sshpass -p alpine ssh root@127.0.0.1 -p2222 -o StrictHostKeyChecking=no "cat /dev/$device" | dd of=dump.raw bs=256 count=$((0x4000))
-    "$(uname)"/"$(uname -m)"/img4tool --convert -s userdata/shsh2/"$(date '+%Y-%m-%d_%H-%M-%S')".shsh2 dump.raw
+    if ! "$(uname)"/"$(uname -m)"/sshpass -p alpine ssh root@127.0.0.1 -p2222 -o StrictHostKeyChecking=no -o ConnectTimeout=15 "test -e /dev/$device"; then
+        echo_error "/dev/$device does not exist on the device"
+        echo_code "Unplug/replug the cable, re-boot the ramdisk if needed, then try again"
+        killall iproxy > /dev/null 2>&1 || true
+        if [ "$(uname)" = 'Linux' ]; then
+            sudo killall usbmuxd > /dev/null 2>&1 || true
+        fi
+        exit
+    fi
+    "$(uname)"/"$(uname -m)"/sshpass -p alpine ssh root@127.0.0.1 -p2222 -o StrictHostKeyChecking=no -o ConnectTimeout=15 "cat /dev/$device" | dd of=dump.raw bs=256 count=$((0x4000))
+    if [ ! -s dump.raw ]; then
+        echo_error "The dump came back empty - /dev/$device could not be read"
+        rm -f dump.raw
+        killall iproxy > /dev/null 2>&1 || true
+        if [ "$(uname)" = 'Linux' ]; then
+            sudo killall usbmuxd > /dev/null 2>&1 || true
+        fi
+        exit
+    fi
+    if ! "$(uname)"/"$(uname -m)"/img4tool --convert -s userdata/shsh2/"$(date '+%Y-%m-%d_%H-%M-%S')".shsh2 dump.raw; then
+        echo_error "img4tool could not convert the dumped blob; the raw dump is kept as dump.raw"
+        killall iproxy > /dev/null 2>&1 || true
+        if [ "$(uname)" = 'Linux' ]; then
+            sudo killall usbmuxd > /dev/null 2>&1 || true
+        fi
+        exit
+    fi
     killall iproxy > /dev/null 2>&1 || true
     if [ "$(uname)" = 'Linux' ]; then
         sudo killall usbmuxd > /dev/null 2>&1 || true
@@ -155,6 +227,9 @@ elif [ "$1" = 'ssh' ]; then
     fi
     exit
 elif [ "$1" = '--backup-activation' ]; then
+    echo_warn "This legacy command saves only 3 files (activation record, CommCenter plist, IC-Info.sisv)."
+    echo_warn "It does NOT save data_ark.plist or the FairPlay tree, so iServices will not survive a restore."
+    echo_warn "Use ./sshrd.sh --backup-activation-full for a complete activation dump."
     if [ "$(uname)" = 'Linux' ]; then
         sudo systemctl stop usbmuxd > /dev/null 2>&1 || true
         sudo killall usbmuxd > /dev/null 2>&1 || true
@@ -225,6 +300,8 @@ elif [ "$1" = '--backup-activation' ]; then
     fi
     exit
 elif [ "$1" = '--restore-activation' ]; then
+    echo_warn "This legacy command restores only 3 files and leaves data_ark.plist untouched."
+    echo_warn "If you took a --backup-activation-full dump, use ./sshrd.sh --restore-activation-full instead."
     if [ "$(uname)" = 'Linux' ]; then
         sudo systemctl stop usbmuxd > /dev/null 2>&1 || true
         sudo killall usbmuxd > /dev/null 2>&1 || true
@@ -292,6 +369,34 @@ elif [ "$1" = '--restore-activation' ]; then
     if [ "$(uname)" = 'Linux' ]; then
         sudo killall usbmuxd > /dev/null 2>&1 || true
     fi
+    exit
+elif [ "$1" = '--backup-activation-full' ] || [ "$1" = '--dump-activation-all' ]; then
+    require_activation_lib
+    act_backup_full
+    exit
+elif [ "$1" = '--restore-activation-full' ]; then
+    require_activation_lib
+    act_restore_full
+    exit
+elif [ "$1" = '--activation-info' ]; then
+    require_activation_lib
+    act_info
+    exit
+elif [ "$1" = '--owner-phone' ] || [ "$1" = '--phone-number' ]; then
+    require_activation_lib
+    act_own_phone
+    exit
+elif [ "$1" = '--owner-email' ] || [ "$1" = '--email-search' ]; then
+    require_activation_lib
+    act_own_email
+    exit
+elif [ "$1" = '--contact-info' ]; then
+    require_activation_lib
+    act_contact_info
+    exit
+elif [ "$1" = '--check-payload' ]; then
+    require_activation_lib
+    act_check_payload
     exit
 elif [ "$1" = '--backup-activation-hfs' ]; then
     if [ "$(uname)" = 'Linux' ]; then
@@ -886,6 +991,10 @@ elif [ "$1" = 'reset' ]; then
         sudo killall usbmuxd > /dev/null 2>&1 || true
     fi
     exit
+elif [ "${1#-}" != "$1" ]; then
+    echo_error "Unknown command: $1"
+    echo_text "Run ./sshrd.sh with no arguments to see the command list"
+    exit
 elif [ "$(uname)" = 'Darwin' ]; then
     if ! ("$(uname)"/"$(uname -m)"/irecovery -q | grep 'MODE: DFU' > /dev/null 2>&1); then
         echo_text "Waiting for device in DFU mode"
@@ -909,6 +1018,13 @@ replace=$("$(uname)"/"$(uname -m)"/irecovery -q | grep MODEL | sed 's/MODEL: //'
 deviceid=$("$(uname)"/"$(uname -m)"/irecovery -q | grep PRODUCT | sed 's/PRODUCT: //')
 ecid=$(printf "%d" "$("$(uname)"/"$(uname -m)"/irecovery -q | grep ECID | sed 's/ECID: //')")
 echo_text "CPID: "$check"   MODEL: "$replace"   PRODUCT: "$deviceid"   ECID: "$ecid""
+
+if [ -z "$check" ]; then
+    echo_error "No device found in DFU/recovery mode"
+    echo_code "iPhone 6s DFU: hold Power+Home for 10s, release Power, keep holding Home ~5s"
+    echo_code "Then run ./sshrd.sh boot again (unplug/replug the cable if it still fails)"
+    exit
+fi
 
 if [ "$1" = 'boot' ]; then
     if [ ! -e sshramdisk/iBSS.img4 ] || [ ! -e sshramdisk/iBEC.img4 ] || [ ! -e sshramdisk/kernelcache.img4 ] || [ ! -e sshramdisk/devicetree.img4 ] || [ ! -e sshramdisk/ramdisk.img4 ] || [ ! -e sshramdisk/version.txt ]; then
@@ -944,7 +1060,17 @@ if [ "$1" = 'boot' ]; then
     "$(uname)"/"$(uname -m)"/irecovery -f sshramdisk/iBSS.img4
     sleep 5
     echo_text "irecovery -f iBEC.img4"
-    "$(uname)"/"$(uname -m)"/irecovery -f sshramdisk/iBEC.img4
+    ibec_try=0
+    while ! "$(uname)"/"$(uname -m)"/irecovery -f sshramdisk/iBEC.img4; do
+        ibec_try=$((ibec_try + 1))
+        if [ "$ibec_try" -ge 10 ]; then
+            echo_error "Could not upload iBEC - the device dropped off USB after iBSS"
+            echo_code "Unplug/replug the cable, re-enter DFU and run ./sshrd.sh boot again"
+            exit
+        fi
+        echo_warn "Device not ready, retrying iBEC ($ibec_try/10)"
+        sleep 2
+    done
     if [ "$check" = '0x8010' ] || [ "$check" = '0x8015' ] || [ "$check" = '0x8011' ] || [ "$check" = '0x8012' ]; then
         echo_text "irecovery -c go"
         "$(uname)"/"$(uname -m)"/irecovery -c go
