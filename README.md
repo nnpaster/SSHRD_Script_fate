@@ -1,11 +1,13 @@
-# SSHRD_Script
+# SSHRD_Script_fate
+- An unofficial, enhanced version of enhanced version of [iPh0ne4s's SSHRD_Script](https://github.com/iPh0ne4s/SSHRD_Script) with added fixes for copying activation files. Made and tested for macOS12, may work with linux(?). Made with the help of DeepSeek.
+- iPh0ne4s's description below...
 - An unofficial, enhanced version of [Nathan verygenericname's SSHRD_Script](https://github.com/verygenericname/SSHRD_Script)
 - This script has been tested working on Ubuntu 24.04 and macOS Sonoma hackintosh. However there are no warranties especially for ARM macOS, please use at your own risk
 - Linux or macOS required. Virtual machine and windows are not and will never be supported even if some features are available on them. It is recommended to use USB-A cable and Intel PC
 - arm64 (A7-A11) devices only. For 32-bit devices, use [Legacy iOS Kit](https://github.com/LukeZGD/Legacy-iOS-Kit)
 ## Basic Usage: create ramdisk, boot ramdisk, SSH into device
 0. Clone this repository:   
-`git clone https://github.com/iPh0ne4s/SSHRD_Script --recursive`   
+`git clone https://github.com/nnpaster/SSHRD_Script_fate --recursive`   
 cd into SSHRD_Script directory. Run `chmod +x sshrd.sh` if running the script for the first time
 1. Enter DFU mode, run `./sshrd.sh <ramdisk version>` to create ramdisk
   - For iOS 7-9 devices, run `./sshrd.sh 10.0.1`
