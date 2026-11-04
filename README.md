@@ -37,9 +37,9 @@ cd into SSHRD_Script directory. Run `chmod +x sshrd.sh` if running the script fo
 - Install TrollStore on 14.0-16.6.1, 16.7 RC, 17.0: `./sshrd.sh --install-trollstore`
 - Un-disable and get unlimited passcode attempts on iOS 7-8: `./sshrd.sh --brute-force`
 ## fate's fork additions
-- `--backup-activation-full` / `--restore-activation-full` / `--activation-info`
-- `--contact-info` / `--owner-phone` / `--owner-email`
-- `--check-payload`; `--dump-blobs` (also accepts `dump-blobs`)
+- `--backup-activation-full` / `--restore-activation-full` / `--activation-info` - fixed activation commands
+- `--contact-info` / `--owner-phone` / `--owner-email` - older owner info (to try and return the phone)
+- `--make-sisv` - finds the newest dump's activation_record.plist, extracts FairPlayKeyData, and writes a fresh IC-Info.sisv next to the dumped FairPlay files — so the next --restore-activation-full uploads a valid one.
 See [README-activation.md](README-activation.md).
 ## Notes & Known Issues
 - "kex_exchange_identification: read: Connection reset by peer" and "Connection reset by 127.0.0.1 port 2222" indicate an SSH connection issue, if this occurs, try the following solutions: unplug and replug device, change cable, re-enter ramdisk mode, reboot PC
