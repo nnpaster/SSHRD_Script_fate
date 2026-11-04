@@ -23,6 +23,38 @@ banner on the usage screen and on every one of its commands:
   FATE's SSHRD fork  |  complete activation backup  |  activation.sh 1.0.0
 ```
 
+### Banner on the phone
+
+The ramdisk itself is patched too, so the boot console shows the fork right after
+the stock credit line:
+
+```
+SSHRD_Script by Nathan (verygenericname)
+Running server
+
+ _____      _      _____   _____
+|  ___|    / \    |_   _| |  ___|
+| |_      / _ \     | |   | |__  
+|  _|    / ___ \    | |   |  __| 
+|_|     /_/   \_\   |_|   |_____|
+    fate's fork of sshrd_script
+```
+
+`restored_external` is a Mach-O binary whose strings are packed with single NUL
+separators (`...verygenericname\0hopefully done...`), so it cannot be edited in
+place. Instead `sshtars/ssh.tar.gz` now carries:
+
+* `usr/local/bin/dropbear.real` - the original daemon, byte-identical
+* `usr/local/bin/dropbear` - a 12-line `/bin/sh` wrapper that prints the banner and
+  then `exec`s `dropbear.real "$@"`
+
+Nothing else in the payload changed. To drop the banner again, replace the wrapper
+with `dropbear.real`, or restore the stock `sshtars/ssh.tar.gz`. Note the payload is
+shared by all ramdisks, so you must rebuild a ramdisk (`./sshrd.sh <version>`) to
+see the change; an already-built `sshramdisk/` keeps the old payload.
+
+---
+
 ## Why the stock `--backup-activation` is not enough
 
 Upstream saves three files:
@@ -202,10 +234,24 @@ already contains all of these files, so this is only a convenience view.
 
 ## Troubleshooting
 
-**`IC-Info.sisv` is empty / undownloadable.** Known iOS behaviour, not a bug:
-delete `/mnt2/mobile/Library/FairPlay/iTunes_Control/iTunes/IC-Info.sisv`, reboot to
-the lock screen (this regenerates a downloadable one), boot the ramdisk again and
-re-run the backup.
+**`IC-Info.sisv` is empty / undownloadable.** Known iOS behaviour, not a bug.
+Two options:
+
+1. delete `/mnt2/mobile/Library/FairPlay/iTunes_Control/iTunes/IC-Info.sisv`, reboot
+   to the lock screen (this regenerates a downloadable one), boot the ramdisk again
+   and re-run the backup;
+2. rebuild it from the activation record — the record carries `FairPlayKeyData`, a
+   base64 container holding the device blob between `R-` and `-E`:
+
+   ```bash
+   ./sshrd.sh --make-sisv      # host-side, reads the newest dump, writes IC-Info.sisv
+   ```
+
+   A genuine `IC-Info.sisv` is **1140 bytes**. The same trick is what
+   [j4nf4b3l/AR2SISV](https://github.com/j4nf4b3l/AR2SISV) and
+   [overcast302/pyAR2SISV](https://github.com/overcast302/pyAR2SISV) do, reimplemented
+   here in shell so no Python is needed. The backup also runs it automatically when
+   the FairPlay copy has no `IC-Info.sisv`.
 
 **`mobileactivationd container not found`.** The data volume is not mounted, or the
 device has never booted far enough for the container to be created. Run

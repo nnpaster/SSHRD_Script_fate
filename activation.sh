@@ -243,6 +243,62 @@ act_tmpdir() {
     printf '%s' "$d"
 }
 
+# -----------------------------------------------------------------------------
+#  IC-Info.sisv from an activation record (the AR2SISV trick)
+# -----------------------------------------------------------------------------
+#  The record embeds FairPlayKeyData: a base64 container that carries the device
+#  FairPlay blob between "R-" and "-E".  Decoding it gives back IC-Info.sisv,
+#  which is what iServices need - useful when the real one cannot be downloaded.
+#  Same logic as j4nf4b3l/AR2SISV and overcast302/pyAR2SISV, in plain shell.
+# -----------------------------------------------------------------------------
+act_b64d() {
+    if printf '' | base64 -D > /dev/null 2>&1; then
+        base64 -D
+    else
+        base64 -d
+    fi
+}
+
+# raw value of a plist key on stdout (data values come out base64-encoded)
+act_plist_raw() {
+    if command -v plutil > /dev/null 2>&1; then
+        plutil -extract "$2" raw -o - "$1" 2>/dev/null
+    elif command -v python3 > /dev/null 2>&1; then
+        python3 -c 'import base64, plistlib, sys
+v = plistlib.load(open(sys.argv[1], "rb"))[sys.argv[2]]
+if isinstance(v, (bytes, bytearray)):
+    print(base64.b64encode(bytes(v)).decode())
+else:
+    print(v)' "$1" "$2" 2>/dev/null
+    fi
+}
+
+# act_sisv_from_record <activation_record.plist> <output IC-Info.sisv>
+act_sisv_from_record() {
+    local fpd text inner
+    if [ ! -f "$1" ]; then
+        return 1
+    fi
+    fpd=$(act_plist_raw "$1" FairPlayKeyData)
+    if [ -z "$fpd" ]; then
+        return 1
+    fi
+    text=$(printf '%s' "$fpd" | act_b64d 2>/dev/null | tr -d '\n')
+    case "$text" in
+        *R-*-E*) : ;;
+        *) return 1 ;;
+    esac
+    inner=$(printf '%s' "$text" | sed -n 's/.*R-\([A-Za-z0-9+/=]*\)-E.*/\1/p')
+    if [ -z "$inner" ]; then
+        return 1
+    fi
+    printf '%s' "$inner" | act_b64d > "$2" 2>/dev/null || return 1
+    if [ ! -s "$2" ]; then
+        return 1
+    fi
+    return 0
+}
+
 # Parse a local plist and print "key => value" lines.
 # macOS plutil is used when present, python plistlib otherwise (Linux).
 act_plist_local() {
@@ -518,6 +574,37 @@ act_check_payload() {
 }
 
 # =============================================================================
+#  --make-sisv : rebuild IC-Info.sisv from the activation record in the dump
+# -----------------------------------------------------------------------------
+#  Host-side only (no device): reads the newest dumped activation_record.plist,
+#  extracts FairPlayKeyData and writes a fresh IC-Info.sisv next to the dumped
+#  FairPlay files, so the next restore uploads a valid one.
+# =============================================================================
+act_make_sisv() {
+    local record base out
+    fate_banner
+    record=$(ls -t "$ACT_ROOT"/*/full/mad-Library/activation_records/activation_record.plist 2>/dev/null | head -1)
+    if [ -z "$record" ]; then
+        echo_error "No activation_record.plist found under $ACT_ROOT/*/full/"
+        echo_code "Run ./sshrd.sh --backup-activation-full first"
+        exit 1
+    fi
+    base=$(dirname "$(dirname "$(dirname "$record")")")
+    out="$base/FairPlay/iTunes_Control/iTunes/IC-Info.sisv"
+    mkdir -p "$base/FairPlay/iTunes_Control/iTunes"
+    echo_text "Record : $record"
+    echo_text "Output : $out"
+    if act_sisv_from_record "$record" "$out"; then
+        echo_text "IC-Info.sisv rebuilt: $(wc -c < "$out" | tr -d ' ') bytes (a genuine one is 1140)"
+    else
+        echo_error "Could not rebuild IC-Info.sisv - no usable FairPlayKeyData in that record"
+        rm -f "$out"
+        exit 1
+    fi
+    exit 0
+}
+
+# =============================================================================
 #  --owner-phone / --owner-email / --contact-info
 # -----------------------------------------------------------------------------
 #  Read-only lookups, the same class of data the device itself shows in
@@ -663,8 +750,20 @@ act_backup_full() {
         echo_warn "No FairPlay directory on the device"
     fi
 
-    # --- 3. CommCenter device specific plist ----------------------------------
-    echo_text "Saving CommCenter activation data"
+    # --- 2b. rebuild IC-Info.sisv from the record when the device will not give it
+    if [ ! -s "$out/FairPlay/iTunes_Control/iTunes/IC-Info.sisv" ]; then
+        rec="$out/mad-Library/activation_records/activation_record.plist"
+        if [ -f "$rec" ]; then
+            mkdir -p "$out/FairPlay/iTunes_Control/iTunes"
+            if act_sisv_from_record "$rec" "$out/FairPlay/iTunes_Control/iTunes/IC-Info.sisv"; then
+                echo_text "IC-Info.sisv was missing - rebuilt it from FairPlayKeyData in the activation record"
+            else
+                echo_warn "IC-Info.sisv missing and could not be rebuilt from the record"
+            fi
+        fi
+    fi
+
+    # --- 3. CommCenter device specific plist ----------------------------------    echo_text "Saving CommCenter activation data"
     if act_ssh "test -f /mnt2/wireless/Library/Preferences/com.apple.commcenter.device_specific_nobackup.plist" > /dev/null 2>&1; then
         act_scp -p root@127.0.0.1:/mnt2/wireless/Library/Preferences/com.apple.commcenter.device_specific_nobackup.plist "$out/" > /dev/null 2>&1 || \
             echo_warn "Could not copy com.apple.commcenter.device_specific_nobackup.plist"
@@ -762,7 +861,12 @@ act_backup_full() {
 
     echo_text "Verifying dump at $out"
     ACT_MISSING=0
-    act_check_file "$out/mad-Library/internal/data_ark.plist" "data_ark.plist (mobileactivationd data ark)" 1
+    if [ -s "$out/mad-Library/internal/data_ark.plist" ] || [ -s "$out/Lockdown/data_ark.plist" ]; then
+        echo "  [ok]    data_ark.plist (mobileactivationd data ark)"
+    else
+        echo "  [MISS]  data_ark.plist (mobileactivationd data ark)"
+        ACT_MISSING=$((ACT_MISSING + 1))
+    fi
     act_check_file "$out/FairPlay/iTunes_Control/iTunes/IC-Info.sisv" "IC-Info.sisv (FairPlay device token)" 1
     act_check_file "$out/FairPlay/iTunes_Control/iTunes/SIC-Info.sisv" "SIC-Info.sisv (FairPlay store token)" 0
     act_check_file "$out/com.apple.commcenter.device_specific_nobackup.plist" "CommCenter device-specific plist" 1
@@ -844,25 +948,54 @@ act_restore_full() {
         act_die "Restore aborted"
     fi
 
-    echo_text "Staging dump on the device (/mnt2/tmp/act_restore)"
-    if ! act_ssh "rm -rf /mnt2/tmp/act_restore; mkdir -p /mnt2/tmp/act_restore" > /dev/null 2>&1; then
+    echo_text "Uploading activation files one by one"
+    # Recursive scp (scp -r dir) is not reliable on every ramdisk, so the staging
+    # tree is recreated explicitly and every file is sent individually.
+    if ! act_ssh "rm -rf /mnt2/tmp/act_restore
+mkdir -p /mnt2/tmp/act_restore/mad-Library/internal
+mkdir -p /mnt2/tmp/act_restore/mad-Library/activation_records
+mkdir -p /mnt2/tmp/act_restore/mad-Library/Preferences
+mkdir -p /mnt2/tmp/act_restore/FairPlay/iTunes_Control/iTunes
+mkdir -p /mnt2/tmp/act_restore/Lockdown" > /dev/null 2>&1; then
         act_die "Cannot create /mnt2/tmp/act_restore on the device"
     fi
 
-    if [ -d "$src/mad-Library" ]; then
-        act_scp -rp "$src/mad-Library" "root@127.0.0.1:/mnt2/tmp/act_restore/" > /dev/null 2>&1 || \
-            act_die "Failed to upload mad-Library"
+    for f in "$src/mad-Library/internal"/*; do
+        if [ -f "$f" ]; then
+            act_scp -p "$f" "root@127.0.0.1:/mnt2/tmp/act_restore/mad-Library/internal/" > /dev/null 2>&1 || \
+                act_die "Failed to upload $(basename "$f")"
+        fi
+    done
+    for f in "$src/mad-Library/activation_records"/*; do
+        if [ -f "$f" ]; then
+            act_scp -p "$f" "root@127.0.0.1:/mnt2/tmp/act_restore/mad-Library/activation_records/" > /dev/null 2>&1 || \
+                act_die "Failed to upload $(basename "$f")"
+        fi
+    done
+    for f in "$src/mad-Library/Preferences"/*; do
+        if [ -f "$f" ]; then
+            act_scp -p "$f" "root@127.0.0.1:/mnt2/tmp/act_restore/mad-Library/Preferences/" > /dev/null 2>&1 || true
+        fi
+    done
+    if [ -d "$src/FairPlay/iTunes_Control/iTunes" ]; then
+        for f in "$src/FairPlay/iTunes_Control/iTunes"/*; do
+            if [ -f "$f" ]; then
+                act_scp -p "$f" "root@127.0.0.1:/mnt2/tmp/act_restore/FairPlay/iTunes_Control/iTunes/" > /dev/null 2>&1 || \
+                    echo_warn "Failed to upload $(basename "$f") (FairPlay)"
+            fi
+        done
     fi
-    if [ -d "$src/FairPlay" ]; then
-        act_scp -rp "$src/FairPlay" "root@127.0.0.1:/mnt2/tmp/act_restore/" > /dev/null 2>&1 || \
-            act_die "Failed to upload FairPlay"
+    if [ -f "$src/Lockdown/data_ark.plist" ]; then
+        act_scp -p "$src/Lockdown/data_ark.plist" "root@127.0.0.1:/mnt2/tmp/act_restore/Lockdown/data_ark.plist" > /dev/null 2>&1 || \
+            echo_warn "Failed to upload Lockdown/data_ark.plist"
     fi
-    if [ -d "$src/Lockdown" ]; then
-        act_scp -rp "$src/Lockdown" "root@127.0.0.1:/mnt2/tmp/act_restore/" > /dev/null 2>&1 || \
-            echo_warn "Failed to upload Lockdown (pair records) - continuing"
-    fi
-    if [ -d "$src/legacy" ]; then
-        act_scp -rp "$src/legacy" "root@127.0.0.1:/mnt2/tmp/act_restore/" > /dev/null 2>&1 || true
+    if [ -d "$src/Lockdown/pair_records" ]; then
+        act_ssh "mkdir -p /mnt2/tmp/act_restore/Lockdown/pair_records" > /dev/null 2>&1 || true
+        for f in "$src/Lockdown/pair_records"/*; do
+            if [ -f "$f" ]; then
+                act_scp -p "$f" "root@127.0.0.1:/mnt2/tmp/act_restore/Lockdown/pair_records/" > /dev/null 2>&1 || true
+            fi
+        done
     fi
     for f in com.apple.commcenter.device_specific_nobackup.plist com.apple.purplebuddy.plist; do
         if [ -f "$src/$f" ]; then
@@ -880,8 +1013,20 @@ LIB="$MAD/Library"
 # 1) data_ark.plist -- mobileactivationd's activation data ark
 if [ -f "$TMP/mad-Library/internal/data_ark.plist" ]; then
     mkdir -p "$LIB/internal"
-    cp -f "$TMP/mad-Library/internal/data_ark.plist" "$LIB/internal/data_ark.plist"
-    chmod 644 "$LIB/internal/data_ark.plist" || true
+    if ! cp -f "$TMP/mad-Library/internal/data_ark.plist" "$LIB/internal/data_ark.plist" 2>/dev/null; then
+        echo "   internal/ is write-protected - swapping the directory"
+        rm -rf /mnt2/tmp/internal.new
+        mkdir -p /mnt2/tmp/internal.new
+        cp -f "$TMP/mad-Library/internal/data_ark.plist" /mnt2/tmp/internal.new/data_ark.plist
+        rm -rf "$LIB/internal" 2>/dev/null || true
+        if [ -e "$LIB/internal" ]; then
+            echo "   ERROR: could not replace $LIB/internal"
+        else
+            mv /mnt2/tmp/internal.new "$LIB/internal"
+            chmod 755 "$LIB/internal" 2>/dev/null || true
+        fi
+    fi
+    chmod 644 "$LIB/internal/data_ark.plist" 2>/dev/null || true
     echo "   data_ark.plist              -> $LIB/internal/data_ark.plist"
 else
     echo "   WARN: no data_ark.plist in the dump"
@@ -972,7 +1117,7 @@ if [ -f "$TMP/com.apple.commcenter.device_specific_nobackup.plist" ]; then
 fi
 
 # 6) Lockdown pair records (+ legacy data ark if the dump has one)
-if [ -d "$TMP/Lockdown/pair_records" ]; then
+if [ -n "$(ls -A "$TMP/Lockdown/pair_records" 2>/dev/null)" ]; then
     mkdir -p /mnt2/root/Library/Lockdown
     rm -rf /mnt2/root/Library/Lockdown/pair_records
     cp -R "$TMP/Lockdown/pair_records" /mnt2/root/Library/Lockdown/pair_records

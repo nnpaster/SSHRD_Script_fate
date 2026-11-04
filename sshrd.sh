@@ -89,6 +89,8 @@ if [ -z "$1" ] || [ -n "$2" ]; then
     echo_code "./sshrd.sh --owner-email"
     echo_text "Ramdisk payload / boot banner check:"
     echo_code "./sshrd.sh --check-payload"
+    echo_text "Rebuild IC-Info.sisv from the dumped activation record (no device needed):"
+    echo_code "./sshrd.sh --make-sisv"
     echo_text "See README.md and README-activation.md for more information"
     exit
 fi
@@ -397,6 +399,10 @@ elif [ "$1" = '--contact-info' ]; then
 elif [ "$1" = '--check-payload' ]; then
     require_activation_lib
     act_check_payload
+    exit
+elif [ "$1" = '--make-sisv' ]; then
+    require_activation_lib
+    act_make_sisv
     exit
 elif [ "$1" = '--backup-activation-hfs' ]; then
     if [ "$(uname)" = 'Linux' ]; then
@@ -1125,6 +1131,18 @@ elif ([ "$deviceid" = 'iPad6,3' ] || [ "$deviceid" = 'iPad6,4' ] || [ "$deviceid
     ipswurl=$(curl -sL "https://api.ipsw.me/v4/device/$deviceid?type=ipsw" | "$(uname)"/"$(uname -m)"/jq '.firmwares | .[] | select(.version=="'16.4'")' | "$(uname)"/"$(uname -m)"/jq -s '.[0] | .url' --raw-output)
 else
     ipswurl=$(curl -sL "https://api.ipsw.me/v4/device/$deviceid?type=ipsw" | "$(uname)"/"$(uname -m)"/jq '.firmwares | .[] | select(.version=="'$1'")' | "$(uname)"/"$(uname -m)"/jq -s '.[0] | .url' --raw-output)
+fi
+
+if [ -z "$ipswurl" ] || [ "$ipswurl" = 'null' ]; then
+    echo_error "No IPSW found for $deviceid on iOS $1"
+    echo_text "Existing ${major}.x versions for this device (use one of these):"
+    curl -sL "https://api.ipsw.me/v4/device/$deviceid?type=ipsw" \
+        | "$(uname)"/"$(uname -m)"/jq -r '.firmwares[].version' 2>/dev/null \
+        | grep "^${major}\." \
+        | sed 's/^/    /' || true
+    echo_code "Example: ./sshrd.sh ${major}.7"
+    echo_code "Check the exact version on the device: Settings -> General -> About -> Version"
+    exit
 fi
 
 if [ "$check" = '0x8960' ] && [ "$(uname)" = 'Linux' ]; then
